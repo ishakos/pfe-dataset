@@ -102,7 +102,7 @@ print("Clean dataset saved successfully.")
 # ========================
 # 9. Validation: reload and check
 # ========================
-df_check = pd.read_csv("../data/iot_dataset_clean.csv")
+df_check = pd.read_csv("iot_dataset_clean.csv")
 print("Reloaded shape:", df_check.shape)
 print(df_check.head())
 print("Check for duplicates in saved file:", df_check.duplicated().sum())
