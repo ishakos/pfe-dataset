@@ -16,9 +16,9 @@ print(raw_dataset.head())
 # 2. Drop identifier columns
 # =========================
 
-cols_to_drop = ["src_ip", "dst_ip", "src_port", "dst_port", "conn_state", "service", "dns_query", "dns_AA", "dns_RD", "dns_RA", "dns_rcode", "ssl_subject", "ssl_issuer", "ssl_established", "http_uri", "http_user_agent", "http_orig_mime_types", "http_resp_mime_types", "http_status_code", "weird_addl", "weird_name", "weird_notice"]
+cols_to_drop = ["dst_ip", "src_port", "dst_port", "conn_state", "service", "dns_query", "dns_AA", "dns_RD", "dns_RA", "dns_rcode", "ssl_subject", "ssl_issuer", "ssl_established", "http_uri", "http_user_agent", "http_orig_mime_types", "http_resp_mime_types", "http_status_code", "weird_addl", "weird_name", "weird_notice"]
 
-col_to_keep = ["duration", "src_bytes", "dst_bytes", "src_pkts", "dst_pkts", "src_ip_bytes", "dst_ip_bytes", "missed_bytes", "proto", "dns_qclass", "dns_qtype", "dns_rejected", "ssl_version", "ssl_cipher", "ssl_resumed", "http_method", "http_version", "http_trans_depth", "http_request_body_len", "http_response_body_len", "label", "type"]
+col_to_keep = ["src_ip", "duration", "src_bytes", "dst_bytes", "src_pkts", "dst_pkts", "src_ip_bytes", "dst_ip_bytes", "missed_bytes", "proto", "dns_qclass", "dns_qtype", "dns_rejected", "ssl_version", "ssl_cipher", "ssl_resumed", "http_method", "http_version", "http_trans_depth", "http_request_body_len", "http_response_body_len", "label", "type"]
 
 raw_dataset = raw_dataset.drop(columns=cols_to_drop, errors="ignore")
 
@@ -95,7 +95,7 @@ print(f"Removed {before - after} duplicate rows. Remaining rows: {after}")
 # 8. Save cleaned dataset
 # =========================
 
-raw_dataset.to_csv("../data/iot_dataset_clean.csv", index=False)
+raw_dataset.to_csv("iot_dataset_clean.csv", index=False)
 
 print("Clean dataset saved successfully.")
 
