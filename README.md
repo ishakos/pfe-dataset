@@ -29,7 +29,9 @@ The goal is to create a **neutral, reusable dataset** that is:
 ## 📊 Input Dataset
 
 Raw dataset:
+```
 iot_dataset_raw.csv
+```
 
 Contains network traffic features such as:
 - packet counts
@@ -42,8 +44,9 @@ Contains network traffic features such as:
 ## 🧹 Preprocessing Steps
 
 The preprocessing pipeline is implemented in:
+```
 preprocess.py
-
+```
 
 ---
 
