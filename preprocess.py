@@ -1,109 +1,271 @@
-# -*- coding: utf-8 -*-
-
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import LabelEncoder
+from pathlib import Path
 
-# =========================
-# 1. Load dataset
-# =========================
 
-raw_dataset = pd.read_csv("../data/iot_dataset_raw.csv")
-print("Original shape:", raw_dataset.shape)
-print(raw_dataset.head())
+RAW_FILE = "iot_dataset_raw.csv"
+CLEAN_FILE = "iot_dataset_clean.csv"
 
-# =========================
-# 2. Drop identifier columns
-# =========================
+# Final shared columns for all models
+COLUMNS_TO_KEEP = [
+    "src_ip",
+    "proto",
+    "duration",
+    "src_bytes",
+    "dst_bytes",
+    "missed_bytes",
+    "src_pkts",
+    "src_ip_bytes",
+    "dst_pkts",
+    "dst_ip_bytes",
+    "dns_qclass",
+    "dns_qtype",
+    "dns_rejected",
+    "ssl_version",
+    "ssl_cipher",
+    "ssl_resumed",
+    "http_trans_depth",
+    "http_method",
+    "http_version",
+    "http_request_body_len",
+    "http_response_body_len",
+    "label",
+    "type",
+]
 
-cols_to_drop = ["dst_ip", "src_port", "dst_port", "conn_state", "service", "dns_query", "dns_AA", "dns_RD", "dns_RA", "dns_rcode", "ssl_subject", "ssl_issuer", "ssl_established", "http_uri", "http_user_agent", "http_orig_mime_types", "http_resp_mime_types", "http_status_code", "weird_addl", "weird_name", "weird_notice"]
+# Columns expected to be numeric
+NUMERIC_COLUMNS = [
+    "duration",
+    "src_bytes",
+    "dst_bytes",
+    "missed_bytes",
+    "src_pkts",
+    "src_ip_bytes",
+    "dst_pkts",
+    "dst_ip_bytes",
+    "dns_qclass",
+    "dns_qtype",
+    "dns_rejected",
+    "http_trans_depth",
+    "http_request_body_len",
+    "http_response_body_len",
+]
 
-col_to_keep = ["src_ip", "duration", "src_bytes", "dst_bytes", "src_pkts", "dst_pkts", "src_ip_bytes", "dst_ip_bytes", "missed_bytes", "proto", "dns_qclass", "dns_qtype", "dns_rejected", "ssl_version", "ssl_cipher", "ssl_resumed", "http_method", "http_version", "http_trans_depth", "http_request_body_len", "http_response_body_len", "label", "type"]
+# Columns expected to be categorical/text
+CATEGORICAL_COLUMNS = [
+    "src_ip",
+    "proto",
+    "ssl_version",
+    "ssl_cipher",
+    "ssl_resumed",
+    "http_method",
+    "http_version",
+    "type",
+]
 
-raw_dataset = raw_dataset.drop(columns=cols_to_drop, errors="ignore")
+TARGET_COLUMN = "label"
 
-print("Shape after dropping columns:", raw_dataset.shape)
-print("Remaining columns:", raw_dataset.columns.tolist())
 
-# =========================
-# 3. Replace "-" with NaN
-# =========================
+def print_section(title: str) -> None:
+    print("\n" + "=" * 70)
+    print(title)
+    print("=" * 70)
 
-raw_dataset = raw_dataset.replace("-", np.nan)
 
-print("Check for '-' remaining:", (raw_dataset == "-").sum().sum())
-print("NaN count per column after replacement:\n", raw_dataset.isna().sum())
+def normalize_label(series: pd.Series) -> pd.Series:
+    """
+    Convert label column to binary 0/1 safely.
+    Handles common forms like:
+    0/1, Benign/Attack, Normal/Malicious, False/True, etc.
+    """
+    if pd.api.types.is_numeric_dtype(series):
+        unique_vals = sorted(series.dropna().unique().tolist())
+        if set(unique_vals).issubset({0, 1}):
+            return series.astype("Int64")
+        raise ValueError(
+            f"Numeric label column contains unexpected values: {unique_vals}. "
+            "Expected binary 0/1."
+        )
 
-# =========================
-# 4. Handle missing values
-# =========================
+    cleaned = (
+        series.astype(str)
+        .str.strip()
+        .str.lower()
+        .replace({"nan": np.nan, "": np.nan})
+    )
 
-# Numerical columns
-num_cols = raw_dataset.select_dtypes(include=["int64", "float64"]).columns
-raw_dataset[num_cols] = raw_dataset[num_cols].fillna(0)
+    benign_values = {
+        "0", "benign", "normal", "false", "no", "non-malicious", "non_malicious"
+    }
+    malicious_values = {
+        "1", "malicious", "attack", "true", "yes", "anomaly"
+    }
 
-# Categorical columns
-cat_cols = raw_dataset.select_dtypes(include=["object"]).columns
-raw_dataset[cat_cols] = raw_dataset[cat_cols].fillna("Unknown")
+    mapped = cleaned.map(
+        lambda x: 0 if x in benign_values else (1 if x in malicious_values else np.nan)
+    )
 
-print("Missing values after handling:")
-print(raw_dataset.isna().sum())
+    unknown = cleaned[mapped.isna() & cleaned.notna()].unique().tolist()
+    if unknown:
+        raise ValueError(
+            f"Unrecognized label values found: {unknown}. "
+            "Please update normalize_label() mapping."
+        )
 
-# =========================
-# 5. Encode categorical columns
-# =========================
+    return mapped.astype("Int64")
 
-cat_cols = raw_dataset.select_dtypes(include=["object", "string"]).columns
-cat_cols = cat_cols.drop("label", errors="ignore")
 
-encoders = {}
+def clean_categorical_column(series: pd.Series) -> pd.Series:
+    """
+    Keep categorical values as strings, but standardize obvious missing markers.
+    We do NOT encode here because encoding is model-specific.
+    """
+    missing_tokens = {
+        "-", "--", "---", "", " ", "nan", "none", "null", "na", "n/a", "unknown"
+    }
 
-for col in cat_cols:
-    le = LabelEncoder()
-    raw_dataset[col] = le.fit_transform(raw_dataset[col])
-    encoders[col] = le
-    print(f"Encoded {col}, unique values:", raw_dataset[col].unique()[:10])
+    cleaned = (
+        series.astype(str)
+        .str.strip()
+        .replace(list(missing_tokens), np.nan)
+    )
 
-# =========================
-# 6. Log transform large numeric features 
-# (Normalization but for extreme large numbers)
-# =========================
+    return cleaned
 
-numeric_cols = raw_dataset.select_dtypes(include=["int64", "float64"]).columns
-large_numeric_cols = []
-for col in numeric_cols:
-    skew = raw_dataset[col].skew()
-    if skew > 1.0:  
-        large_numeric_cols.append(col)
-        print(f"{col}: skew={skew:.2f}")
-print("Will log transform:", large_numeric_cols)
 
-for col in large_numeric_cols:
-    raw_dataset[col] = np.log1p(raw_dataset[col])
-    print(f"Applied log1p to {col}. Min/Max now:", raw_dataset[col].min(), raw_dataset[col].max())
+def clean_numeric_column(series: pd.Series) -> pd.Series:
+    """
+    Convert to numeric safely. Invalid values become NaN.
+    We do NOT impute here because imputation is model-specific.
+    """
+    return pd.to_numeric(series, errors="coerce")
 
-# =========================
-# 7. Remove duplicates
-# =========================
 
-before = raw_dataset.shape[0]
-raw_dataset = raw_dataset.drop_duplicates().reset_index(drop=True)
-after = raw_dataset.shape[0]
-print(f"Removed {before - after} duplicate rows. Remaining rows: {after}")
+def remove_constant_columns(df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
+    constant_cols = [col for col in df.columns if df[col].nunique(dropna=False) <= 1]
+    if constant_cols:
+        df = df.drop(columns=constant_cols)
+    return df, constant_cols
 
-# =========================
-# 8. Save cleaned dataset
-# =========================
 
-raw_dataset.to_csv("iot_dataset_clean.csv", index=False)
+def main() -> None:
+    base_dir = Path(__file__).resolve().parent
+    raw_path = base_dir / RAW_FILE
+    clean_path = base_dir / CLEAN_FILE
 
-print("Clean dataset saved successfully.")
+    print_section("STEP 1 - LOAD RAW DATA")
+    if not raw_path.exists():
+        raise FileNotFoundError(f"Raw dataset not found: {raw_path}")
 
-# ========================
-# 9. Validation: reload and check
-# ========================
-df_check = pd.read_csv("iot_dataset_clean.csv")
-print("Reloaded shape:", df_check.shape)
-print(df_check.head())
-print("Check for duplicates in saved file:", df_check.duplicated().sum())
-print("Check for missing values in saved file:\n", df_check.isna().sum())
+    df = pd.read_csv(raw_path)
+    print(f"Loaded raw dataset from: {raw_path}")
+    print(f"Raw shape: {df.shape}")
+
+    print_section("STEP 2 - CHECK REQUIRED COLUMNS")
+    missing_required = [col for col in COLUMNS_TO_KEEP if col not in df.columns]
+    if missing_required:
+        raise ValueError(
+            f"These required columns are missing from the raw dataset: {missing_required}"
+        )
+
+    # Keep only the agreed final shared columns
+    df = df[COLUMNS_TO_KEEP].copy()
+    print(f"Shape after keeping selected columns: {df.shape}")
+
+    print_section("STEP 3 - STANDARDIZE MISSING VALUES")
+    # First, replace common global placeholders
+    df = df.replace(
+        ["-", "--", "---", " ", "", "NA", "N/A", "na", "n/a", "None", "none", "null", "Null"],
+        np.nan,
+    )
+
+    print_section("STEP 4 - CLEAN TARGET COLUMN")
+    df[TARGET_COLUMN] = normalize_label(df[TARGET_COLUMN])
+    if df[TARGET_COLUMN].isna().any():
+        raise ValueError("Target column still contains missing values after normalization.")
+
+    print("Label distribution:")
+    print(df[TARGET_COLUMN].value_counts(dropna=False))
+
+    print_section("STEP 5 - CLEAN CATEGORICAL COLUMNS")
+    for col in CATEGORICAL_COLUMNS:
+        if col in df.columns:
+            df[col] = clean_categorical_column(df[col])
+
+    print_section("STEP 6 - CLEAN NUMERIC COLUMNS")
+    for col in NUMERIC_COLUMNS:
+        if col in df.columns:
+            df[col] = clean_numeric_column(df[col])
+
+    print_section("STEP 7 - REMOVE EXACT DUPLICATES")
+    before_duplicates = len(df)
+    df = df.drop_duplicates(keep="first").reset_index(drop=True)
+    removed_duplicates = before_duplicates - len(df)
+    print(f"Removed exact duplicate rows: {removed_duplicates}")
+    print(f"Shape after duplicate removal: {df.shape}")
+
+    print_section("STEP 8 - DROP ROWS WITH MISSING TARGET ONLY")
+    before_target_drop = len(df)
+    df = df.dropna(subset=[TARGET_COLUMN]).reset_index(drop=True)
+    dropped_target_rows = before_target_drop - len(df)
+    print(f"Dropped rows with missing target: {dropped_target_rows}")
+
+    print_section("STEP 9 - OPTIONAL CONSTANT COLUMN CHECK")
+    df, constant_cols = remove_constant_columns(df)
+    if constant_cols:
+        print(f"Dropped constant columns: {constant_cols}")
+    else:
+        print("No constant columns found.")
+
+    print_section("STEP 10 - FINAL DATA TYPES")
+    # Use pandas nullable integer for binary-ish numeric columns when possible
+    integer_like_columns = [
+        "src_bytes",
+        "dst_bytes",
+        "missed_bytes",
+        "src_pkts",
+        "src_ip_bytes",
+        "dst_pkts",
+        "dst_ip_bytes",
+        "dns_qclass",
+        "dns_qtype",
+        "dns_rejected",
+        "http_trans_depth",
+        "http_request_body_len",
+        "http_response_body_len",
+        TARGET_COLUMN,
+    ]
+
+    for col in integer_like_columns:
+        if col in df.columns:
+            non_null = df[col].dropna()
+            if len(non_null) > 0 and np.all(np.isclose(non_null, np.round(non_null))):
+                df[col] = df[col].astype("Int64")
+
+    if "duration" in df.columns:
+        df["duration"] = pd.to_numeric(df["duration"], errors="coerce")
+
+    print(df.dtypes)
+
+    print_section("STEP 11 - FINAL DIAGNOSTICS")
+    print(f"Final shape: {df.shape}")
+    print("\nMissing values per column:")
+    print(df.isna().sum())
+
+    print("\nLabel distribution:")
+    print(df[TARGET_COLUMN].value_counts(normalize=False))
+    print("\nLabel ratio:")
+    print(df[TARGET_COLUMN].value_counts(normalize=True))
+
+    print("\nCategorical unique counts:")
+    for col in CATEGORICAL_COLUMNS:
+        if col in df.columns:
+            print(f"{col}: {df[col].nunique(dropna=True)} unique values")
+
+    print_section("STEP 12 - SAVE CLEAN DATASET")
+    df.to_csv(clean_path, index=False)
+    print(f"Clean dataset saved to: {clean_path}")
+
+
+if __name__ == "__main__":
+    main()
